@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 morokoshibito. Licensed under the GNU GPL v3; see LICENSE.
 // Minimal mock of the Synthesizer V Studio 2 scripting API, enough to run the
-// side panel scripts in Node.js. It models one track with two note groups,
-// piecewise-linear parameter curves, point selection and a 4/4 time axis at 120 BPM.
+// side panel scripts in Node.js. It models one track whose note groups can be
+// added, deleted and opened, piecewise-linear parameter curves, point selection
+// and a 4/4 time axis at 120 BPM. Like SV, any access to a deleted note group,
+// its reference or its curves throws.
 "use strict";
 var vm = require("vm");
 var fs = require("fs");
@@ -52,9 +54,38 @@ function automation(type) {
 	};
 }
 
+function deadError(what) {
+	return new Error("__invocation_error__: cannot access a deleted '" + what + "' object");
+}
+
+// wraps every method so it throws once state.dead is true
+function guard(obj, what, state) {
+	Object.keys(obj).forEach(function (k) {
+		if (typeof obj[k] !== "function") { return; }
+		var f = obj[k];
+		obj[k] = function () { if (state.dead) { throw deadError(what); } return f.apply(this, arguments); };
+	});
+	return obj;
+}
+
 function group(name) {
-	var curves = {};
-	return { getName: function () { return name; }, getParameter: function (t) { return curves[t] || (curves[t] = automation(t)); } };
+	var curves = {}, state = { dead: false };
+	var g = guard({
+		getName: function () { return name; },
+		getParameter: function (t) { return curves[t] || (curves[t] = guard(automation(t), "Automation", state)); }
+	}, "NoteGroup", state);
+	g._state = state;
+	return g;
+}
+
+function reference(grp, offsetQn) {
+	var state = { dead: false };
+	var r = guard({
+		getTarget: function () { return grp; },
+		getTimeOffset: function () { return offsetQn * Q; }
+	}, "NoteGroupReference", state);
+	r._state = state;
+	return r;
 }
 
 // lang: SV interface language code, e.g. "zh-cn", "en-us"
@@ -67,9 +98,19 @@ function load(scriptPath, lang) {
 	var trMap = null;
 	var ctx;
 
-	var main = group("main"), chorus = group("chorus");
-	var refMain = { getTarget: function () { return main; }, getTimeOffset: function () { return 0; } };
-	var refChorus = { getTarget: function () { return chorus; }, getTimeOffset: function () { return 8 * Q; } };
+	var main = group("main");
+	var refs = [reference(main, 0)];          // refs[0] is the track's main group
+	var current = refs[0];                    // group open in the piano roll
+	function addGroup(name, offsetQn) { var r = reference(group(name), offsetQn); refs.push(r); return r; }
+	function deleteGroup(r) {
+		var i = refs.indexOf(r);
+		if (i <= 0) { throw new Error("mock: cannot delete the main group"); }
+		refs.splice(i, 1);
+		r._state.dead = true;
+		if (current === r) { current = refs[0]; }
+	}
+	var chorusRef = addGroup("chorus", 8);
+	var chorus = chorusRef.getTarget();
 	var selection = {
 		getSelectedPoints: function (t) { return (selected[t] || []).slice(); },
 		selectPoints: function (t, a) { selected[t] = (selected[t] || []).concat(a.filter(function (x) { return (selected[t] || []).indexOf(x) < 0; })); },
@@ -83,7 +124,11 @@ function load(scriptPath, lang) {
 		getSecondsFromBlick: function (b) { return b / Q / 2; },
 		getBlickFromSeconds: function (s) { return s * 2 * Q; }
 	};
-	var track = { getName: function () { return "Vocal"; }, getNumGroups: function () { return 2; }, getGroupReference: function (i) { return [refMain, refChorus][i]; } };
+	var track = {
+		getName: function () { return "Vocal"; },
+		getNumGroups: function () { return refs.length; },
+		getGroupReference: function (i) { return refs[i]; }
+	};
 
 	var SV = {
 		QUARTER: Q,
@@ -97,7 +142,13 @@ function load(scriptPath, lang) {
 		refreshSidePanel: function () { titlesAtRefresh.push({ ready: translationsReady, title: ctx.getSidePanelSectionState().title }); },
 		getPlayback: function () { return { getPlayhead: function () { return 1.25; } }; },
 		getProject: function () { return { getTimeAxis: function () { return timeAxis; }, getNumTracks: function () { return 1; }, getTrack: function () { return track; } }; },
-		getMainEditor: function () { return { getSelection: function () { return selection; }, getCurrentGroup: function () { return refMain; } }; }
+		getMainEditor: function () {
+			return {
+				getSelection: function () { return selection; },
+				getCurrentGroup: function () { return current; },
+				getCurrentTrack: function () { return track; }
+			};
+		}
 	};
 
 	ctx = vm.createContext({ SV: SV });
@@ -113,7 +164,12 @@ function load(scriptPath, lang) {
 		titlesAtRefresh: titlesAtRefresh,
 		setDragging: function (d) { dragging = d; },
 		tick: function (n) { for (var i = 0; i < (n || 1); i++) { var f = timers.shift(); if (f) { f(); } } },
-		curve: function (t) { return main.getParameter(t || "loudness"); },
+		curve: function (t) { return current.getTarget().getParameter(t || "loudness"); },
+		refs: refs,
+		addGroup: addGroup,
+		// deleting a group kills its reference, the group and its curves, as in SV
+		deleteGroup: function (r) { var g = r.getTarget(); deleteGroup(r); g._state.dead = true; },
+		openGroup: function (r) { current = r; Object.keys(selected).forEach(function (k) { selected[k] = []; }); },
 		select: function (t, positions) { selected[t] = positions.slice(); },
 		status: function () { return ctx.status.getValue(); }
 	};

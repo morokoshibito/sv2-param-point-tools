@@ -30,6 +30,14 @@ function selection() { return SV.getMainEditor().getSelection(); }
 function groupRef() { return SV.getMainEditor().getCurrentGroup(); }
 function offsetOf(ref) { try { return ref.getTimeOffset(); } catch (e) { return 0; } }
 function offset() { return offsetOf(groupRef()); }
+// Identifies the note group open in the piano roll. Point positions are group-local,
+// so a remembered position is only valid while this key stays the same.
+function groupKey() {
+	try {
+		var ed = SV.getMainEditor(), ref = ed.getCurrentGroup();
+		return ed.getCurrentTrack().getName() + "/" + ref.getTarget().getName() + "@" + offsetOf(ref);
+	} catch (e) { return ""; }
+}
 function timeAxis() { return SV.getProject().getTimeAxis(); }
 function autoOf(ref, pIdx) { return ref.getTarget().getParameter(PARAMS[pIdx].type); }
 function automation(pIdx) { return autoOf(groupRef(), pIdx); }

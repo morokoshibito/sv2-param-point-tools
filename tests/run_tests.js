@@ -184,5 +184,89 @@ test("titles in each language", function () {
 	});
 });
 
+console.log("Deleted / recreated / switched note groups");
+
+function noError(sv) { assert.ok(!/Error|错误|__invocation_error__/.test(sv.status()), sv.status()); }
+
+test("tools: copy works after the target group is deleted and recreated (reported bug)", function () {
+	var sv = mock.load(TOOLS, "zh-cn"), c = sv.ctx;
+	sv.curve().add(0, 0.5); sv.curve().add(Q, -0.5);
+	sv.select("loudness", [0, Q]); sv.tick();
+	c.tgtParam.setValue(6); c.tgtGroup.setValue(1); c.dq.setValue("8");
+	c.bCopy.fire(); sv.tick(); noError(sv);
+	sv.deleteGroup(sv.refs[1]); sv.tick();
+	var again = sv.addGroup("chorus", 8); sv.tick();
+	c.tgtGroup.setValue(1); c.bCopy.fire(); sv.tick();
+	noError(sv);
+	assert.strictEqual(again.getTarget().getParameter("gender").pts.length, 2);
+});
+
+test("tools: list follows added and deleted groups without a refresh button", function () {
+	var sv = mock.load(TOOLS, "en-us"); sv.tick();
+	assert.strictEqual(sv.ctx.groupNames.length, 2);
+	sv.addGroup("bridge", 16); sv.tick();
+	assert.strictEqual(sv.ctx.groupNames.length, 3);
+	sv.deleteGroup(sv.refs[1]); sv.tick();
+	assert.strictEqual(JSON.stringify(sv.ctx.groupNames), JSON.stringify(["Vocal / Main group", "Vocal / bridge @ bar 5"]));
+	noError(sv);
+});
+
+test("tools: keeps the chosen target when another group is deleted", function () {
+	var sv = mock.load(TOOLS, "en-us"); sv.addGroup("bridge", 16); sv.tick();
+	sv.ctx.tgtGroup.setValue(2); sv.tick();
+	sv.deleteGroup(sv.refs[1]); sv.tick();
+	assert.strictEqual(sv.ctx.groupNames[sv.ctx.tgtGroup.getValue()], "Vocal / bridge @ bar 5");
+});
+
+test("tools: deleting the chosen target between refreshes gives a message, not an error", function () {
+	var sv = mock.load(TOOLS, "en-us"), c = sv.ctx;
+	sv.curve().add(0, 1); sv.select("loudness", [0]); sv.tick();
+	c.tgtGroup.setValue(1); sv.tick();
+	sv.deleteGroup(sv.refs[1]);                 // no tick: the panel has not seen the deletion yet
+	c.dq.setValue("8"); c.bCopy.fire(); sv.tick();
+	noError(sv);
+	assert.ok(/no longer exists/.test(sv.status()), sv.status());
+	assert.strictEqual(sv.main.getParameter("tension").pts.length, 0, "copied into another group instead of stopping");
+});
+
+[EDITOR, BATCH, TOOLS].forEach(function (file) {
+	test(path.basename(file) + ": the open group is deleted and recreated", function () {
+		var sv = mock.load(file, "zh-cn");
+		var r = sv.addGroup("verse", 4); sv.openGroup(r);
+		sv.curve().add(0, 1); sv.select("loudness", [0]); sv.tick();
+		sv.deleteGroup(r); sv.tick(2);
+		var r2 = sv.addGroup("verse", 4); sv.openGroup(r2);
+		sv.curve().add(Q, 2); sv.select("loudness", [Q]); sv.tick(2);
+		noError(sv);
+	});
+});
+
+test("editor: switching groups refreshes the boxes even if they were edited", function () {
+	var sv = mock.load(EDITOR, "en-us"), c = sv.ctx;
+	sv.curve().add(Q, 1); sv.select("loudness", [Q]); sv.tick();
+	c.fValue.setValue("5");                      // typed but not applied
+	sv.openGroup(sv.refs[1]); sv.curve().add(Q, -3); sv.select("loudness", [Q]); sv.tick();
+	assert.strictEqual(c.fValue.getValue(), "-3.0000");
+});
+
+test("editor: Apply is refused when the group changed since the last refresh", function () {
+	var sv = mock.load(EDITOR, "en-us"), c = sv.ctx;
+	sv.curve().add(Q, 1); sv.select("loudness", [Q]); sv.tick();
+	c.fValue.setValue("5");
+	sv.openGroup(sv.refs[1]); sv.curve().add(Q, -3); sv.select("loudness", [Q]);   // no tick
+	c.bApply.fire(); sv.tick();
+	assert.strictEqual(sv.curve().get(Q), -3, "value was written into the wrong group");
+	assert.strictEqual(sv.main.getParameter("loudness").get(Q), 1);
+});
+
+test("batch: an action uses the current selection, not the one from the last refresh", function () {
+	var sv = mock.load(BATCH, "en-us"), c = sv.ctx;
+	sv.curve().add(0, 1); sv.curve().add(Q, 1); sv.select("loudness", [0, Q]); sv.tick();
+	sv.openGroup(sv.refs[1]); sv.curve().add(2 * Q, 4); sv.select("loudness", [2 * Q]);   // no tick
+	c.setVal.setValue("-1"); c.bSet.fire();
+	assert.deepStrictEqual(pts(sv.main.getParameter("loudness")), [[0, 1], [1, 1]]);
+	assert.deepStrictEqual(pts(sv.curve()), [[2, -1]]);
+});
+
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

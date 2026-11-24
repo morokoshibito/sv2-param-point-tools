@@ -13,7 +13,7 @@ function getClientInfo() {
 		"name": "Param Curve Tools",
 		"category": "Utilities",
 		"author": "morokoshibito",
-		"versionNumber": 3,
+		"versionNumber": 4,
 		"minEditorVersion": 131330,
 		"type": "SidePanelSection"
 	};
@@ -51,6 +51,14 @@ function selection() { return SV.getMainEditor().getSelection(); }
 function groupRef() { return SV.getMainEditor().getCurrentGroup(); }
 function offsetOf(ref) { try { return ref.getTimeOffset(); } catch (e) { return 0; } }
 function offset() { return offsetOf(groupRef()); }
+// Identifies the note group open in the piano roll. Point positions are group-local,
+// so a remembered position is only valid while this key stays the same.
+function groupKey() {
+	try {
+		var ed = SV.getMainEditor(), ref = ed.getCurrentGroup();
+		return ed.getCurrentTrack().getName() + "/" + ref.getTarget().getName() + "@" + offsetOf(ref);
+	} catch (e) { return ""; }
+}
 function timeAxis() { return SV.getProject().getTimeAxis(); }
 function autoOf(ref, pIdx) { return ref.getTarget().getParameter(PARAMS[pIdx].type); }
 function automation(pIdx) { return autoOf(groupRef(), pIdx); }
@@ -134,10 +142,13 @@ function startLoop(ms, f) {
 var status = W("");
 var phParam = W(2), bInsert = W(0);
 var threshold = W("0.002"), bSimplify = W(0);
-var tgtParam = W(3), tgtGroup = W(0), dq = W("0"), mapRange = W(false), overwrite = W(false), bCopy = W(0), bGroups = W(0);
+var tgtParam = W(3), tgtGroup = W(0), dq = W("0"), mapRange = W(false), overwrite = W(false), bCopy = W(0);
 
 var st = { param: -1, pos: [] };
-var groupRefs = [], groupNames = [], groupsBuilt = false;
+// The group list is read from the project on every refresh. NoteGroupReference
+// objects are never kept between refreshes: a deleted group leaves a dead reference
+// ("cannot access a deleted NoteGroupReference"), so copy() looks the target up again.
+var groupNames = [], groupSig = null;
 
 function names() { var n = []; for (var i = 0; i < PARAMS.length; i++) { n.push(pName(i)); } return n; }
 
@@ -150,15 +161,20 @@ function playhead() {
 }
 
 function refresh() {
-	if (!groupsBuilt) { buildGroups(); }
+	syncGroups();
+	syncSelection();
+	var p = phIndex(), ph = playhead();
+	status.setValue(T("Playhead %1 · %2 s", mbText(ph.abs), fx(ph.sec, 3)) + "\n" +
+		pName(p) + " = " + fx(automation(p).get(ph.local), 4) + (PARAMS[p].unit ? " " + pUnit(p) : "") + msgLine());
+}
+
+// read the selection fresh; called by refresh() and before every action
+function syncSelection() {
 	var pick = scanSelection();
 	if (pick) {
 		if (pick.p !== st.param) { phParam.setValue(pick.p); }
 		st.param = pick.p; st.pos = pick.pos;
 	} else { st.param = -1; st.pos = []; }
-	var p = phIndex(), ph = playhead();
-	status.setValue(T("Playhead %1 · %2 s", mbText(ph.abs), fx(ph.sec, 3)) + "\n" +
-		pName(p) + " = " + fx(automation(p).get(ph.local), 4) + (PARAMS[p].unit ? " " + pUnit(p) : "") + msgLine());
 }
 
 function insertAtPlayhead() {
@@ -185,26 +201,49 @@ function simplify() {
 	say(whole ? T("Whole curve: %1 -> %2 point(s).", before, after) : T("Selected range: %1 -> %2 point(s).", before, after));
 }
 
-function buildGroups() {
-	groupRefs = []; groupNames = [];
+// [{ref, label}] for every note group reference in the project, read fresh
+function listGroups() {
+	var out = [];
 	var project = SV.getProject();
 	for (var t = 0; t < project.getNumTracks(); t++) {
 		var track = project.getTrack(t);
 		for (var g = 0; g < track.getNumGroups(); g++) {
 			var ref = track.getGroupReference(g);
-			groupRefs.push(ref);
-			groupNames.push(track.getName() + " / " + (g === 0 ? T("Main group") :
-				ref.getTarget().getName() + " @ " + T("bar %1", blickToMB(offsetOf(ref)).measure)));
+			var label = track.getName() + " / " + (g === 0 ? T("Main group") :
+				ref.getTarget().getName() + " @ " + T("bar %1", blickToMB(offsetOf(ref)).measure));
+			out.push({ ref: ref, label: label });
 		}
 	}
-	groupsBuilt = true;
-	var cur = groupRef();
-	for (var i = 0; i < groupRefs.length; i++) {
-		if (groupRefs[i].getTarget().getName() === cur.getTarget().getName() && offsetOf(groupRefs[i]) === offsetOf(cur)) {
-			tgtGroup.setValue(i);
+	return out;
+}
+
+// Rebuild the target list when groups are added, deleted, renamed or moved.
+// The selected target is kept by its label; on the first run the current group is selected.
+// Returns true when the chosen target disappeared (the selection fell back to another group).
+function syncGroups() {
+	var list = listGroups(), labels = [];
+	for (var i = 0; i < list.length; i++) { labels.push(list[i].label); }
+	var sig = labels.join("\n");
+	if (sig === groupSig) { return false; }
+
+	var first = (groupSig === null);
+	var prevLabel = groupNames[Number(tgtGroup.getValue())];
+	groupSig = sig;
+	groupNames = labels;
+
+	var pick = -1;
+	if (!first && prevLabel !== undefined) { pick = labels.indexOf(prevLabel); }
+	if (pick < 0) {
+		var cur = groupRef();
+		for (var j = 0; j < list.length; j++) {
+			if (list[j].ref.getTarget().getName() === cur.getTarget().getName() && offsetOf(list[j].ref) === offsetOf(cur)) { pick = j; }
 		}
 	}
+	tgtGroup.setValue(pick < 0 ? 0 : pick);
+	var lost = !first && prevLabel !== undefined && labels.indexOf(prevLabel) < 0;
+	if (lost) { say(T("The target group no longer exists; please choose another one.")); }
 	try { SV.refreshSidePanel(); } catch (e) {}
+	return lost;
 }
 
 function rangeOf(pIdx, auto) {
@@ -215,8 +254,10 @@ function rangeOf(pIdx, auto) {
 function copy() {
 	if (st.param < 0) { say(T("Select the points to copy first.")); return; }
 	var gi = Number(tgtGroup.getValue()), tp = Number(tgtParam.getValue()), shift = num(dq);
-	var dst = groupRefs[gi];
-	if (!dst) { say(T("Refresh the group list first.")); return; }
+	// look the target up again right now; never reuse a reference from an earlier refresh
+	var list = listGroups(), label = groupNames[gi], dst = null;
+	for (var g = 0; g < list.length; g++) { if (list[g].label === label) { dst = list[g].ref; break; } }
+	if (!dst) { syncGroups(); say(T("The target group no longer exists; please choose another one.")); return; }
 	if (isNaN(shift)) { say(T("Invalid time offset.")); return; }
 	var srcAuto = automation(st.param), dstAuto = autoOf(dst, tp), srcOff = offset(), dstOff = offsetOf(dst);
 	var sr = rangeOf(st.param, srcAuto), tr = rangeOf(tp, dstAuto);
@@ -242,10 +283,18 @@ function copy() {
 		: T("Copied %1 point(s) to %2.", out.length, pName(tp)));
 }
 
-bInsert.setValueChangeCallback(wrap(insertAtPlayhead));
-bSimplify.setValueChangeCallback(wrap(simplify));
-bCopy.setValueChangeCallback(wrap(copy));
-bGroups.setValueChangeCallback(wrap(buildGroups));
+// needsTarget: stop instead of silently copying into another group when the target vanished
+function action(f, needsTarget) {
+	return wrap(function () {
+		var lost = syncGroups();
+		syncSelection();
+		if (lost && needsTarget) { return; }
+		f();
+	});
+}
+bInsert.setValueChangeCallback(action(insertAtPlayhead, false));
+bSimplify.setValueChangeCallback(action(simplify, false));
+bCopy.setValueChangeCallback(action(copy, true));
 
 startLoop(100, refresh);
 
@@ -263,9 +312,9 @@ function getSidePanelSectionState() {
 			row([box(threshold, 0.5), btn(T("Simplify"), bSimplify, 0.5)]),
 
 			label(T("Copy selected points to: parameter  |  group")),
-			row([combo(tgtParam, n, 0.5), combo(tgtGroup, groupNames.length ? groupNames : [T("(refresh)")], 0.5)]),
+			row([combo(tgtParam, n, 0.5), combo(tgtGroup, groupNames.length ? groupNames : [T("(no groups)")], 0.5)]),
 			label(T("Time offset (quarter notes)")),
-			row([box(dq, 0.5), btn(T("Refresh groups"), bGroups, 0.5)]),
+			row([box(dq, 1.0)]),
 			row([check(T("Convert values by the ranges of both parameters"), mapRange)]),
 			row([check(T("Delete existing points in the target range first"), overwrite)]),
 			row([btn(T("Copy"), bCopy, 1.0)])
@@ -290,8 +339,8 @@ function getTranslations(langCode) {
 			["Selected range: %1 -> %2 point(s).", "选中范围：%1 -> %2 个点。"],
 			["Main group", "主编组"],
 			["bar %1", "%1 小节"],
+			["The target group no longer exists; please choose another one.", "目标编组已不存在，请重新选择。"],
 			["Select the points to copy first.", "请先选中要复制的点。"],
-			["Refresh the group list first.", "请先刷新编组列表。"],
 			["Invalid time offset.", "时间偏移无效。"],
 			["All points fall before the start of the target group; nothing copied. Try a larger time offset.", "所有点都在目标编组开始之前，未复制。可加大时间偏移。"],
 			["Copied %1 point(s) to %2; skipped %3.", "已复制 %1 个点到%2，跳过 %3 个。"],
@@ -302,9 +351,8 @@ function getTranslations(langCode) {
 			["Simplify (whole curve when nothing is selected): threshold", "简化（未选点时简化整条曲线）：阈值"],
 			["Simplify", "简化"],
 			["Copy selected points to: parameter  |  group", "复制选中点到：参数  |  编组"],
-			["(refresh)", "（刷新）"],
+			["(no groups)", "（没有编组）"],
 			["Time offset (quarter notes)", "时间偏移（四分音符）"],
-			["Refresh groups", "刷新编组"],
 			["Convert values by the ranges of both parameters", "数值按两个参数的范围等比换算"],
 			["Delete existing points in the target range first", "先删除目标范围内原有的点"],
 			["Copy", "复制"],
@@ -335,8 +383,8 @@ function getTranslations(langCode) {
 			["Selected range: %1 -> %2 point(s).", "選取範圍：%1 -> %2 個點。"],
 			["Main group", "主群組"],
 			["bar %1", "第 %1 小節"],
+			["The target group no longer exists; please choose another one.", "目標群組已不存在，請重新選擇。"],
 			["Select the points to copy first.", "請先選取要複製的點。"],
-			["Refresh the group list first.", "請先重新整理群組清單。"],
 			["Invalid time offset.", "時間偏移無效。"],
 			["All points fall before the start of the target group; nothing copied. Try a larger time offset.", "所有點都在目標群組開始之前，未複製。可加大時間偏移。"],
 			["Copied %1 point(s) to %2; skipped %3.", "已複製 %1 個點到%2，略過 %3 個。"],
@@ -347,9 +395,8 @@ function getTranslations(langCode) {
 			["Simplify (whole curve when nothing is selected): threshold", "簡化（未選取點時簡化整條曲線）：閾值"],
 			["Simplify", "簡化"],
 			["Copy selected points to: parameter  |  group", "複製選取的點到：參數  |  群組"],
-			["(refresh)", "（重新整理）"],
+			["(no groups)", "（沒有群組）"],
 			["Time offset (quarter notes)", "時間偏移（四分音符）"],
-			["Refresh groups", "重新整理群組"],
 			["Convert values by the ranges of both parameters", "數值依兩個參數的範圍等比換算"],
 			["Delete existing points in the target range first", "先刪除目標範圍內原有的點"],
 			["Copy", "複製"],
@@ -380,8 +427,8 @@ function getTranslations(langCode) {
 			["Selected range: %1 -> %2 point(s).", "選択範囲：%1 -> %2 個の点。"],
 			["Main group", "メイングループ"],
 			["bar %1", "%1 小節"],
+			["The target group no longer exists; please choose another one.", "コピー先のグループは存在しません。別のグループを選択してください。"],
 			["Select the points to copy first.", "先にコピーする点を選択してください。"],
-			["Refresh the group list first.", "先にグループ一覧を更新してください。"],
 			["Invalid time offset.", "時間オフセットが無効です。"],
 			["All points fall before the start of the target group; nothing copied. Try a larger time offset.", "すべての点がコピー先グループの開始より前にあるため、コピーしませんでした。時間オフセットを大きくしてください。"],
 			["Copied %1 point(s) to %2; skipped %3.", "%1 個の点を %2 にコピーしました（%3 個はスキップ）。"],
@@ -392,9 +439,8 @@ function getTranslations(langCode) {
 			["Simplify (whole curve when nothing is selected): threshold", "簡略化（点が未選択のときはカーブ全体）：しきい値"],
 			["Simplify", "簡略化"],
 			["Copy selected points to: parameter  |  group", "選択中の点のコピー先：パラメータ  |  グループ"],
-			["(refresh)", "（更新）"],
+			["(no groups)", "（グループなし）"],
 			["Time offset (quarter notes)", "時間オフセット（四分音符）"],
-			["Refresh groups", "グループを更新"],
 			["Convert values by the ranges of both parameters", "両パラメータの範囲に合わせて値を換算"],
 			["Delete existing points in the target range first", "コピー先の範囲にある既存の点を先に削除"],
 			["Copy", "コピー"],

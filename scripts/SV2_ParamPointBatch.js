@@ -14,7 +14,7 @@ function getClientInfo() {
 		"name": "Param Point Batch",
 		"category": "Utilities",
 		"author": "morokoshibito",
-		"versionNumber": 4,
+		"versionNumber": 5,
 		"minEditorVersion": 131330,
 		"type": "SidePanelSection"
 	};
@@ -52,6 +52,14 @@ function selection() { return SV.getMainEditor().getSelection(); }
 function groupRef() { return SV.getMainEditor().getCurrentGroup(); }
 function offsetOf(ref) { try { return ref.getTimeOffset(); } catch (e) { return 0; } }
 function offset() { return offsetOf(groupRef()); }
+// Identifies the note group open in the piano roll. Point positions are group-local,
+// so a remembered position is only valid while this key stays the same.
+function groupKey() {
+	try {
+		var ed = SV.getMainEditor(), ref = ed.getCurrentGroup();
+		return ed.getCurrentTrack().getName() + "/" + ref.getTarget().getName() + "@" + offsetOf(ref);
+	} catch (e) { return ""; }
+}
 function timeAxis() { return SV.getProject().getTimeAxis(); }
 function autoOf(ref, pIdx) { return ref.getTarget().getParameter(PARAMS[pIdx].type); }
 function automation(pIdx) { return autoOf(groupRef(), pIdx); }
@@ -142,14 +150,19 @@ var grid = W(3), bQuant = W(0), bSpace = W(0);
 
 var st = { param: -1, pos: [] };
 
-function refresh() {
+// read the selection fresh; called by refresh() and before every action
+function syncSelection() {
 	var pick = scanSelection();
+	if (pick) { st.param = pick.p; st.pos = pick.pos; } else { st.param = -1; st.pos = []; }
+	return pick;
+}
+
+function refresh() {
+	var pick = syncSelection();
 	if (!pick) {
-		st.param = -1; st.pos = [];
 		status.setValue(T("Select several points on one parameter curve.") + msgLine());
 		return;
 	}
-	st.param = pick.p; st.pos = pick.pos;
 	var auto = automation(st.param), mn = Infinity, mx = -Infinity, sum = 0;
 	for (var i = 0; i < st.pos.length; i++) {
 		var v = auto.get(st.pos[i]);
@@ -278,12 +291,13 @@ function space() {
 	say(T("Spaced %1 point(s) evenly.", n));
 }
 
-bSet.setValueChangeCallback(wrap(setAll));
-bRecalc.setValueChangeCallback(wrap(recalc));
-bGenerate.setValueChangeCallback(wrap(generate));
-bScale.setValueChangeCallback(wrap(scale));
-bQuant.setValueChangeCallback(wrap(quantize));
-bSpace.setValueChangeCallback(wrap(space));
+function action(f) { return wrap(function () { syncSelection(); f(); }); }
+bSet.setValueChangeCallback(action(setAll));
+bRecalc.setValueChangeCallback(action(recalc));
+bGenerate.setValueChangeCallback(action(generate));
+bScale.setValueChangeCallback(action(scale));
+bQuant.setValueChangeCallback(action(quantize));
+bSpace.setValueChangeCallback(action(space));
 
 startLoop(100, refresh);
 

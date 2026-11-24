@@ -13,7 +13,7 @@ function getClientInfo() {
 		"name": "Param Point Editor",
 		"category": "Utilities",
 		"author": "morokoshibito",
-		"versionNumber": 7,
+		"versionNumber": 8,
 		"minEditorVersion": 131330,
 		"type": "SidePanelSection"
 	};
@@ -51,6 +51,14 @@ function selection() { return SV.getMainEditor().getSelection(); }
 function groupRef() { return SV.getMainEditor().getCurrentGroup(); }
 function offsetOf(ref) { try { return ref.getTimeOffset(); } catch (e) { return 0; } }
 function offset() { return offsetOf(groupRef()); }
+// Identifies the note group open in the piano roll. Point positions are group-local,
+// so a remembered position is only valid while this key stays the same.
+function groupKey() {
+	try {
+		var ed = SV.getMainEditor(), ref = ed.getCurrentGroup();
+		return ed.getCurrentTrack().getName() + "/" + ref.getTarget().getName() + "@" + offsetOf(ref);
+	} catch (e) { return ""; }
+}
 function timeAxis() { return SV.getProject().getTimeAxis(); }
 function autoOf(ref, pIdx) { return ref.getTarget().getParameter(PARAMS[pIdx].type); }
 function automation(pIdx) { return autoOf(groupRef(), pIdx); }
@@ -136,7 +144,7 @@ var fValue = W(""), fMeasure = W(""), fBeat = W(""), fQn = W(""), fSec = W("");
 var bApply = W(0), bRevert = W(0), bPrev = W(0), bNext = W(0);
 var FIELDS = { value: fValue, measure: fMeasure, beat: fBeat, qn: fQn, sec: fSec };
 
-var st = { param: -1, pos: null };
+var st = { param: -1, pos: null, group: "" };
 var written = {}, lastKey = "", forceWrite = false, pendingPos = null, panelParam = -2;
 
 function setText(k, t) { written[k] = t; FIELDS[k].setValue(t); }
@@ -191,6 +199,7 @@ function refresh() {
 
 	st.param = pick.p;
 	st.pos = pick.pos[0];
+	st.group = groupKey();
 	if (pendingPos !== null) {
 		for (var i = 0; i < pick.pos.length; i++) { if (Math.abs(pick.pos[i] - pendingPos) < 1) { st.pos = pick.pos[i]; } }
 		pendingPos = null;
@@ -206,7 +215,7 @@ function refresh() {
 	status.setValue(info + msgLine());
 
 	// refresh the boxes only when it will not overwrite typing
-	var key = st.param + "@" + st.pos;
+	var key = st.group + "#" + st.param + "@" + st.pos;
 	if (forceWrite || key !== lastKey || !anyDirty()) {
 		writeFields(st.pos + offset(), value);
 		forceWrite = false;
@@ -222,8 +231,21 @@ function rebuildIfNeeded() {
 	}
 }
 
+// true when the selection still matches what the boxes were filled from
+function sameSelection() {
+	var pick = scanSelection();
+	if (!pick || pick.p !== st.param || groupKey() !== st.group) { return false; }
+	for (var i = 0; i < pick.pos.length; i++) { if (Math.abs(pick.pos[i] - st.pos) < 1) { return true; } }
+	return false;
+}
+
 function apply() {
 	if (st.param < 0) { return; }
+	if (!sameSelection()) {
+		forceWrite = true;
+		say(T("The selection or note group changed; check the values and press Apply again."));
+		return;
+	}
 	var off = offset();
 	var abs = targetPosition(st.pos + off);
 	var v = num(fValue);
@@ -240,7 +262,7 @@ function apply() {
 }
 
 function step(dir) {
-	if (st.param < 0) { return; }
+	if (st.param < 0 || !sameSelection()) { return; }
 	var pts = sortedPoints(automation(st.param)), ci = -1;
 	for (var i = 0; i < pts.length; i++) { if (Math.abs(pts[i][0] - st.pos) < 1) { ci = i; } }
 	var ni = ci + dir;
@@ -295,6 +317,7 @@ function getTranslations(langCode) {
 			["%1 · curve point %2/%3", "%1 · 曲线第 %2/%3 个点"],
 			["%1 point(s) selected, showing the leftmost.", "选中了 %1 个点，显示最左边的一个。"],
 			["Other parameter curves also have selected points.", "其他参数曲线上也有选中点。"],
+			["The selection or note group changed; check the values and press Apply again.", "选区或音符组已变化，请确认数值后再按一次“应用”。"],
 			["Invalid number.", "输入不是有效数字。"],
 			["Applied.", "已应用。"],
 			["Already the first point.", "已是第一个点。"],
@@ -333,6 +356,7 @@ function getTranslations(langCode) {
 			["%1 · curve point %2/%3", "%1 · 曲線第 %2/%3 個點"],
 			["%1 point(s) selected, showing the leftmost.", "已選取 %1 個點，顯示最左邊的一個。"],
 			["Other parameter curves also have selected points.", "其他參數曲線上也有選取的點。"],
+			["The selection or note group changed; check the values and press Apply again.", "選取範圍或音符群組已變更，請確認數值後再按一次「套用」。"],
 			["Invalid number.", "輸入不是有效數字。"],
 			["Applied.", "已套用。"],
 			["Already the first point.", "已是第一個點。"],
@@ -371,6 +395,7 @@ function getTranslations(langCode) {
 			["%1 · curve point %2/%3", "%1 · カーブの %2/%3 番目の点"],
 			["%1 point(s) selected, showing the leftmost.", "%1 個の点を選択中。一番左の点を表示しています。"],
 			["Other parameter curves also have selected points.", "他のパラメータカーブにも選択中の点があります。"],
+			["The selection or note group changed; check the values and press Apply again.", "選択範囲またはノートグループが変わりました。値を確認してからもう一度「適用」を押してください。"],
 			["Invalid number.", "有効な数値ではありません。"],
 			["Applied.", "適用しました。"],
 			["Already the first point.", "最初の点です。"],

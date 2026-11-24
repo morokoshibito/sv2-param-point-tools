@@ -12,7 +12,7 @@ function getClientInfo() {
 		"name": "Param Point Editor",
 		"category": "Utilities",
 		"author": "morokoshibito",
-		"versionNumber": 7,
+		"versionNumber": 8,
 		"minEditorVersion": 131330,
 		"type": "SidePanelSection"
 	};
@@ -25,7 +25,7 @@ var fValue = W(""), fMeasure = W(""), fBeat = W(""), fQn = W(""), fSec = W("");
 var bApply = W(0), bRevert = W(0), bPrev = W(0), bNext = W(0);
 var FIELDS = { value: fValue, measure: fMeasure, beat: fBeat, qn: fQn, sec: fSec };
 
-var st = { param: -1, pos: null };
+var st = { param: -1, pos: null, group: "" };
 var written = {}, lastKey = "", forceWrite = false, pendingPos = null, panelParam = -2;
 
 function setText(k, t) { written[k] = t; FIELDS[k].setValue(t); }
@@ -80,6 +80,7 @@ function refresh() {
 
 	st.param = pick.p;
 	st.pos = pick.pos[0];
+	st.group = groupKey();
 	if (pendingPos !== null) {
 		for (var i = 0; i < pick.pos.length; i++) { if (Math.abs(pick.pos[i] - pendingPos) < 1) { st.pos = pick.pos[i]; } }
 		pendingPos = null;
@@ -95,7 +96,7 @@ function refresh() {
 	status.setValue(info + msgLine());
 
 	// refresh the boxes only when it will not overwrite typing
-	var key = st.param + "@" + st.pos;
+	var key = st.group + "#" + st.param + "@" + st.pos;
 	if (forceWrite || key !== lastKey || !anyDirty()) {
 		writeFields(st.pos + offset(), value);
 		forceWrite = false;
@@ -111,8 +112,21 @@ function rebuildIfNeeded() {
 	}
 }
 
+// true when the selection still matches what the boxes were filled from
+function sameSelection() {
+	var pick = scanSelection();
+	if (!pick || pick.p !== st.param || groupKey() !== st.group) { return false; }
+	for (var i = 0; i < pick.pos.length; i++) { if (Math.abs(pick.pos[i] - st.pos) < 1) { return true; } }
+	return false;
+}
+
 function apply() {
 	if (st.param < 0) { return; }
+	if (!sameSelection()) {
+		forceWrite = true;
+		say(T("The selection or note group changed; check the values and press Apply again."));
+		return;
+	}
 	var off = offset();
 	var abs = targetPosition(st.pos + off);
 	var v = num(fValue);
@@ -129,7 +143,7 @@ function apply() {
 }
 
 function step(dir) {
-	if (st.param < 0) { return; }
+	if (st.param < 0 || !sameSelection()) { return; }
 	var pts = sortedPoints(automation(st.param)), ci = -1;
 	for (var i = 0; i < pts.length; i++) { if (Math.abs(pts[i][0] - st.pos) < 1) { ci = i; } }
 	var ni = ci + dir;
